@@ -60,22 +60,48 @@ if not USE_MONGODB:
         def _match_query(self, doc, query):
             # Simple query matching for basic filters
             for key, value in query.items():
-                if key in doc:
+                # Handle nested field paths like "schedule_details.days"
+                if '.' in key:
+                    field_parts = key.split('.')
+                    current_val = doc
+                    for part in field_parts:
+                        if isinstance(current_val, dict) and part in current_val:
+                            current_val = current_val[part]
+                        else:
+                            return False
+                    
+                    # Now check the value against current_val
                     if isinstance(value, dict):
                         if '$in' in value:
-                            if not any(item in doc[key] for item in value['$in']):
+                            if not any(item in current_val for item in value['$in']):
                                 return False
                         elif '$gte' in value:
-                            if doc[key] < value['$gte']:
+                            if current_val < value['$gte']:
                                 return False
                         elif '$lte' in value:
-                            if doc[key] > value['$lte']:
+                            if current_val > value['$lte']:
                                 return False
                     else:
-                        if doc[key] != value:
+                        if current_val != value:
                             return False
                 else:
-                    return False
+                    # Handle top-level fields
+                    if key in doc:
+                        if isinstance(value, dict):
+                            if '$in' in value:
+                                if not any(item in doc[key] for item in value['$in']):
+                                    return False
+                            elif '$gte' in value:
+                                if doc[key] < value['$gte']:
+                                    return False
+                            elif '$lte' in value:
+                                if doc[key] > value['$lte']:
+                                    return False
+                        else:
+                            if doc[key] != value:
+                                return False
+                    else:
+                        return False
             return True
         
         def update_one(self, query, update):
@@ -259,6 +285,17 @@ initial_activities = {
         },
         "max_participants": 16,
         "participants": ["william@mergington.edu", "jacob@mergington.edu"]
+    },
+    "Manga Maniacs": {
+        "description": "Explore the fantastic stories of the most interesting characters from Japanese Manga (graphic novels).",
+        "schedule": "Tuesdays, 7:00 PM - 8:30 PM",
+        "schedule_details": {
+            "days": ["Tuesday"],
+            "start_time": "19:00",
+            "end_time": "20:30"
+        },
+        "max_participants": 15,
+        "participants": []
     }
 }
 
