@@ -2,14 +2,110 @@
 MongoDB database configuration and setup for Mergington High School API
 """
 
-from pymongo import MongoClient
 from argon2 import PasswordHasher
+import copy
 
-# Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['mergington_high']
-activities_collection = db['activities']
-teachers_collection = db['teachers']
+# In-memory storage for development (when MongoDB is not available)
+USE_MONGODB = False
+try:
+    from pymongo import MongoClient
+    # Try to connect to MongoDB
+    client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=1000)
+    # Test the connection
+    client.admin.command('ping')
+    db = client['mergington_high']
+    activities_collection = db['activities']
+    teachers_collection = db['teachers']
+    USE_MONGODB = True
+    print("Connected to MongoDB")
+except Exception as e:
+    print(f"MongoDB connection failed: {e}. Using in-memory storage.")
+    USE_MONGODB = False
+if not USE_MONGODB:
+    _activities_data = {}
+    _teachers_data = {}
+    
+    class MockCollection:
+        def __init__(self, data_store):
+            self.data = data_store
+        
+        def count_documents(self, query):
+            return len(self.data)
+        
+        def insert_one(self, document):
+            doc_id = document.get('_id')
+            if doc_id:
+                self.data[doc_id] = {k: v for k, v in document.items() if k != '_id'}
+        
+        def find_one(self, query):
+            if isinstance(query, dict) and '_id' in query:
+                doc_id = query['_id']
+                if doc_id in self.data:
+                    result = copy.deepcopy(self.data[doc_id])
+                    result['_id'] = doc_id
+                    return result
+            return None
+        
+        def find(self, query=None):
+            result = []
+            for doc_id, doc_data in self.data.items():
+                doc = copy.deepcopy(doc_data)
+                doc['_id'] = doc_id
+                
+                # Simple query matching
+                if query is None or self._match_query(doc, query):
+                    result.append(doc)
+            return result
+        
+        def _match_query(self, doc, query):
+            # Simple query matching for basic filters
+            for key, value in query.items():
+                if key in doc:
+                    if isinstance(value, dict):
+                        if '$in' in value:
+                            if not any(item in doc[key] for item in value['$in']):
+                                return False
+                        elif '$gte' in value:
+                            if doc[key] < value['$gte']:
+                                return False
+                        elif '$lte' in value:
+                            if doc[key] > value['$lte']:
+                                return False
+                    else:
+                        if doc[key] != value:
+                            return False
+                else:
+                    return False
+            return True
+        
+        def update_one(self, query, update):
+            if isinstance(query, dict) and '_id' in query:
+                doc_id = query['_id']
+                if doc_id in self.data:
+                    if '$push' in update:
+                        for field, value in update['$push'].items():
+                            if field in self.data[doc_id]:
+                                self.data[doc_id][field].append(value)
+                            else:
+                                self.data[doc_id][field] = [value]
+                    if '$pull' in update:
+                        for field, value in update['$pull'].items():
+                            if field in self.data[doc_id] and value in self.data[doc_id][field]:
+                                self.data[doc_id][field].remove(value)
+                    return type('MockResult', (), {'modified_count': 1})()
+            return type('MockResult', (), {'modified_count': 0})()
+        
+        def aggregate(self, pipeline):
+            # Simple aggregation for getting unique days
+            result = set()
+            for doc_data in self.data.values():
+                if 'schedule_details' in doc_data and 'days' in doc_data['schedule_details']:
+                    for day in doc_data['schedule_details']['days']:
+                        result.add(day)
+            return [{'_id': day} for day in sorted(result)]
+
+    activities_collection = MockCollection(_activities_data)
+    teachers_collection = MockCollection(_teachers_data)
 
 # Methods
 def hash_password(password):
